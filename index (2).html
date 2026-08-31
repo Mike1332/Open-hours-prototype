@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Open hours" />
+<title>Open hours</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; }
+  * { box-sizing: border-box; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+/* ---------------- icons (hand-drawn, no external icon package) ---------------- */
+function Ic({ children, size = 16 }) {
+  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{children}</svg>;
+}
+const Check = p => <Ic {...p}><polyline points="20 6 9 17 4 12" /></Ic>;
+const Plus = p => <Ic {...p}><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></Ic>;
+const RefreshCw = p => <Ic {...p}><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" /></Ic>;
+const X = p => <Ic {...p}><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></Ic>;
+const ChevronLeft = p => <Ic {...p}><polyline points="15 18 9 12 15 6" /></Ic>;
+const ChevronRight = p => <Ic {...p}><polyline points="9 18 15 12 9 6" /></Ic>;
+const Pencil = p => <Ic {...p}><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" /></Ic>;
+const Play = p => <Ic {...p}><polygon points="5 3 19 12 5 21 5 3" /></Ic>;
+const Pause = p => <Ic {...p}><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></Ic>;
+const RotateCcw = p => <Ic {...p}><polyline points="1 4 1 10 7 10" /><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" /></Ic>;
+const Sun = p => <Ic {...p}><circle cx="12" cy="12" r="5" /><line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" /><line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" /><line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" /><line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" /></Ic>;
+const Moon = p => <Ic {...p}><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79Z" /></Ic>;
+
+/* ---------------- theme ---------------- */
+const THEMES = {
+  light: { bg: '#F1EFE8', ink: '#20241F', line: '#D9D4C7', muted: '#6B6A62', card: '#FFFFFF', warnBg: '#FBF3DE', warnBorder: '#C9A34E', warnText: '#6B4E12' },
+  dark:  { bg: '#211F1A', ink: '#EDEAE1', line: '#3D3A32', muted: '#9C998C', card: '#2A2822', warnBg: '#3A2F18', warnBorder: '#8A6A2E', warnText: '#E8C878' },
+};
+
+/* ---------------- schedule engine ---------------- */
+// The app makes no assumption about anyone's sleep or wake hours — the whole
+// day is schedulable. "Unavailable" time (sleep, etc.) is just an ordinary
+// Fixed Commitment each person sets for themselves, same as School or German.
+const WORK_START_MIN = 0;
+const WORK_END_MIN = 24 * 60;
+const DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const PALETTE = ['#2C4A6E', '#A9761E', '#5C7A52', '#8C4A5C', '#4A6B6E', '#7A5C3E', '#6B5B8F', '#3E6B5C'];
+
+function pad(n) { return String(n).padStart(2, '0'); }
+function toISODate(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+function addDays(date, n) { const d = new Date(date); d.setDate(d.getDate() + n); return d; }
+function minutesLabel(m) {
+  const h = Math.floor(m / 60), mm = m % 60;
+  return `${pad(h)}:${pad(mm)}`;
+}
+function formatFileSize(bytes) {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+function daysUntil(deadline) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const dl = new Date(deadline + 'T00:00:00');
+  return Math.round((dl - today) / 86400000);
+}
+
+function seedFixed() {
+  const rows = [];
+  let id = 1;
+  [1, 2, 3, 4, 5].forEach(w => rows.push({ id: id++, name: 'School', weekday: w, start: 420, end: 900 }));
+  [1, 3].forEach(w => rows.push({ id: id++, name: 'German', weekday: w, start: 1080, end: 1275 }));
+  [2, 4].forEach(w => rows.push({ id: id++, name: 'Robotics', weekday: w, start: 960, end: 1050 }));
+  [1, 3, 5].forEach(w => rows.push({ id: id++, name: 'Gym', weekday: w, start: 900, end: 960 }));
+  [2, 4].forEach(w => rows.push({ id: id++, name: 'Gym', weekday: w, start: 1050, end: 1110 }));
+  [0, 1, 2, 3, 4, 5, 6].forEach(w => rows.push({ id: id++, name: 'Sleep', weekday: w, start: 1380, end: 1440 })); // 23:00–24:00
+  [0, 1, 2, 3, 4, 5, 6].forEach(w => rows.push({ id: id++, name: 'Sleep', weekday: w, start: 0, end: 420 }));    // 00:00–07:00
+  return rows;
+}
+function seedTasks() {
+  const today = new Date();
+  return [
+    { id: 1, name: 'iGEM team planning', project: 'iGEM', duration: 90, deadline: toISODate(addDays(today, 5)), priority: 5, done: false, notes: '' },
+    { id: 2, name: 'Phage paper — results section', project: 'Phage paper', duration: 60, deadline: toISODate(addDays(today, 3)), priority: 5, done: false, notes: '' },
+    { id: 3, name: 'Math olympiad practice set', project: 'Math olympiad', duration: 45, deadline: toISODate(addDays(today, 6)), priority: 3, done: false, notes: '' },
+    { id: 4, name: 'Biology EE — draft methods', project: 'Biology EE', duration: 60, deadline: toISODate(addDays(today, 10)), priority: 4, done: false, notes: '' },
+  ];
+}
+function seedProjectColors() {
+  const names = ['iGEM', 'Phage paper', 'Math olympiad', 'Biology EE'];
+  const obj = {};
+  names.forEach((n, i) => { obj[n] = PALETTE[i % PALETTE.length]; });
+  return obj;
+}
+
+function generateSlots(fixedEvents, startDate, days = 14) {
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const slots = [];
+  for (let offset = 0; offset < days; offset++) {
+    const date = addDays(startDate, offset);
+    const weekday = date.getDay();
+    const dateStr = toISODate(date);
+    const dayStart = offset === 0 ? Math.max(WORK_START_MIN, nowMin) : WORK_START_MIN;
+    const dayEnd = WORK_END_MIN;
+    if (dayStart >= dayEnd) continue;
+    const busy = fixedEvents
+      .filter(e => e.weekday === weekday)
+      .map(e => ({ start: Math.max(e.start, dayStart), end: Math.min(e.end, dayEnd) }))
+      .filter(e => e.start < e.end)
+      .sort((a, b) => a.start - b.start);
+    let cursor = dayStart;
+    for (const b of busy) {
+      if (b.start > cursor) slots.push({ date: dateStr, weekday, start: cursor, end: b.start, cur: cursor });
+      cursor = Math.max(cursor, b.end);
+    }
+    if (cursor < dayEnd) slots.push({ date: dateStr, weekday, start: cursor, end: dayEnd, cur: cursor });
+  }
+  return slots;
+}
+
+function scheduleTasks(tasks, slots) {
+  const pending = tasks.filter(t => !t.done);
+  const sorted = [...pending].sort((a, b) => {
+    const scoreA = a.priority * 100 / (Math.max(0, daysUntil(a.deadline)) + 1);
+    const scoreB = b.priority * 100 / (Math.max(0, daysUntil(b.deadline)) + 1);
+    return scoreB - scoreA;
+  });
+  const cursorSlots = slots.map(s => ({ ...s }));
+  const blocks = [];
+  const unscheduled = [];
+  let slotIdx = 0;
+  for (const task of sorted) {
+    let remaining = task.duration;
+    while (remaining > 0) {
+      while (slotIdx < cursorSlots.length && cursorSlots[slotIdx].cur >= cursorSlots[slotIdx].end) slotIdx++;
+      if (slotIdx >= cursorSlots.length) { unscheduled.push({ ...task, remaining }); break; }
+      const slot = cursorSlots[slotIdx];
+      const avail = slot.end - slot.cur;
+      const use = Math.min(avail, remaining);
+      blocks.push({
+        id: `${task.id}-${slot.date}-${slot.cur}`, taskId: task.id, name: task.name, project: task.project,
+        date: slot.date, weekday: slot.weekday, start: slot.cur, end: slot.cur + use,
+      });
+      slot.cur += use;
+      remaining -= use;
+    }
+  }
+  return { blocks, unscheduled, remainingSlots: cursorSlots };
+}
+
+/* ---------------- pomodoro ---------------- */
+const POMO_DURATIONS = { focus: 25 * 60, short: 5 * 60, long: 15 * 60 };
+function formatTimer(sec) { return `${Math.floor(sec / 60)}:${pad(sec % 60)}`; }
+function beep() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator(); const g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.frequency.value = 880; g.gain.value = 0.16;
+    o.start(); o.stop(ctx.currentTime + 0.35);
+  } catch {}
+}
+function advancePomo(cycles, mode) {
+  if (mode === 'focus') {
+    const nc = cycles + 1;
+    const nextMode = nc % 4 === 0 ? 'long' : 'short';
+    return { cycles: nc, mode: nextMode, left: POMO_DURATIONS[nextMode] };
+  }
+  return { cycles, mode: 'focus', left: POMO_DURATIONS.focus };
+}
+
+/* ---------------- storage (real browser localStorage) ---------------- */
+function loadJSON(key, fallback) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
+}
+function saveJSON(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} }
+
+/* ---------------- attachments (IndexedDB — real files need real headroom) ---------------- */
+const ATT_DB_NAME = 'open-hours-db';
+const ATT_STORE = 'attachments';
+function openAttDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(ATT_DB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(ATT_STORE)) {
+        const store = db.createObjectStore(ATT_STORE, { keyPath: 'id', autoIncrement: true });
+        store.createIndex('taskId', 'taskId', { unique: false });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function addAttachment(taskId, file) {
+  const db = await openAttDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(ATT_STORE, 'readwrite');
+    const req = tx.objectStore(ATT_STORE).add({ taskId, name: file.name, type: file.type, size: file.size, blob: file, addedAt: Date.now() });
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function getAttachmentsForTask(taskId) {
+  const db = await openAttDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(ATT_STORE, 'readonly');
+    const req = tx.objectStore(ATT_STORE).index('taskId').getAll(taskId);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function deleteAttachment(id) {
+  const db = await openAttDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(ATT_STORE, 'readwrite');
+    tx.objectStore(ATT_STORE).delete(id);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function deleteAttachmentsForTask(taskId) {
+  const atts = await getAttachmentsForTask(taskId);
+  const db = await openAttDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(ATT_STORE, 'readwrite');
+    const store = tx.objectStore(ATT_STORE);
+    atts.forEach(a => store.delete(a.id));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+async function clearAllAttachments() {
+  const db = await openAttDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(ATT_STORE, 'readwrite');
+    tx.objectStore(ATT_STORE).clear();
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+const ALLOWED_ATTACHMENT_EXT = ['csv', 'pdf', 'docx', 'png', 'jpg', 'jpeg', 'xlsx'];
+
+function OpenHours() {
+  const [fixedEvents, setFixedEvents] = useState(() => loadJSON('oh-fixed', seedFixed()));
+  const [tasks, setTasks] = useState(() => loadJSON('oh-tasks', seedTasks()));
+  const [projectColors, setProjectColors] = useState(() => loadJSON('oh-colors', seedProjectColors()));
+  const [darkMode, setDarkMode] = useState(() => loadJSON('oh-dark', false));
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [selectedOffset, setSelectedOffset] = useState(0);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState(null);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [expandedProjects, setExpandedProjects] = useState({});
+  const [viewMode, setViewMode] = useState('day');
+  const [form, setForm] = useState({ name: '', project: '', duration: 30, deadline: toISODate(addDays(new Date(), 7)), priority: 3, notes: '' });
+  const [fixedForm, setFixedForm] = useState({ name: '', weekdays: [1], start: '09:00', end: '10:00' });
+  const [editAttachments, setEditAttachments] = useState([]);
+  const [attachError, setAttachError] = useState('');
+
+  const [pomoMode, setPomoMode] = useState('focus');
+  const [pomoLeft, setPomoLeft] = useState(POMO_DURATIONS.focus);
+  const [pomoRunning, setPomoRunning] = useState(false);
+  const [pomoCycles, setPomoCycles] = useState(0);
+
+  useEffect(() => { saveJSON('oh-fixed', fixedEvents); }, [fixedEvents]);
+  useEffect(() => { saveJSON('oh-tasks', tasks); }, [tasks]);
+  useEffect(() => { saveJSON('oh-colors', projectColors); }, [projectColors]);
+  useEffect(() => { saveJSON('oh-dark', darkMode); }, [darkMode]);
+
+  const theme = THEMES[darkMode ? 'dark' : 'light'];
+  useEffect(() => { document.body.style.background = theme.bg; }, [darkMode]);
+
+  // pomodoro: tick once per second while running
+  useEffect(() => {
+    if (!pomoRunning) return;
+    const id = setInterval(() => setPomoLeft(s => Math.max(0, s - 1)), 1000);
+    return () => clearInterval(id);
+  }, [pomoRunning]);
+
+  // pomodoro: handle a segment finishing
+  useEffect(() => {
+    if (pomoLeft !== 0 || !pomoRunning) return;
+    beep();
+    setPomoRunning(false);
+    const next = advancePomo(pomoCycles, pomoMode);
+    setPomoCycles(next.cycles); setPomoMode(next.mode); setPomoLeft(next.left);
+  }, [pomoLeft]);
+
+  function togglePomo() { setPomoRunning(r => !r); }
+  function resetPomo() { setPomoRunning(false); setPomoLeft(POMO_DURATIONS[pomoMode]); }
+  function skipPomo() {
+    setPomoRunning(false);
+    const next = advancePomo(pomoCycles, pomoMode);
+    setPomoCycles(next.cycles); setPomoMode(next.mode); setPomoLeft(next.left);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    if (editingId == null) { setEditAttachments([]); setAttachError(''); return; }
+    getAttachmentsForTask(editingId).then(atts => { if (!cancelled) setEditAttachments(atts); });
+    return () => { cancelled = true; };
+  }, [editingId]);
+
+  const attachmentUrls = useMemo(() => {
+    const map = {};
+    editAttachments.forEach(a => { map[a.id] = URL.createObjectURL(a.blob); });
+    return map;
+  }, [editAttachments]);
+  useEffect(() => () => { Object.values(attachmentUrls).forEach(u => URL.revokeObjectURL(u)); }, [attachmentUrls]);
+
+  const todayDate = useMemo(() => new Date(), [refreshTick]);
+  const todayISOStr = toISODate(todayDate);
+  const selectedDate = useMemo(() => addDays(todayDate, selectedOffset), [todayDate, selectedOffset]);
+  const selectedStr = toISODate(selectedDate);
+  const isToday = selectedOffset === 0;
+
+  const slots = useMemo(() => generateSlots(fixedEvents, todayDate, 14), [fixedEvents, todayDate]);
+  const { blocks, unscheduled, remainingSlots } = useMemo(() => scheduleTasks(tasks, slots), [tasks, slots]);
+
+  const dayItems = useMemo(() => {
+    const fixedDay = fixedEvents.filter(e => e.weekday === selectedDate.getDay())
+      .map(e => ({ kind: 'fixed', start: e.start, end: e.end, name: e.name }));
+    const taskDay = blocks.filter(b => b.date === selectedStr)
+      .map(b => ({ kind: 'task', start: b.start, end: b.end, name: b.name, project: b.project, taskId: b.taskId }));
+    return [...fixedDay, ...taskDay].sort((a, b) => a.start - b.start);
+  }, [fixedEvents, blocks, selectedDate, selectedStr]);
+
+  const weekStrip = useMemo(() => {
+    const days = [];
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(todayDate, i);
+      const ds = toISODate(d);
+      const open = remainingSlots.filter(s => s.date === ds).reduce((sum, s) => sum + (s.end - s.cur), 0);
+      days.push({ date: ds, weekday: d.getDay(), label: DAY_SHORT[d.getDay()], num: d.getDate(), openHours: (open / 60).toFixed(1) });
+    }
+    return days;
+  }, [remainingSlots, todayDate]);
+
+  const weekGridDays = useMemo(() => weekStrip.map(d => {
+    const fixedDay = fixedEvents.filter(e => e.weekday === d.weekday).map(e => ({ kind: 'fixed', start: e.start, end: e.end, name: e.name }));
+    const taskDay = blocks.filter(b => b.date === d.date).map(b => ({ kind: 'task', start: b.start, end: b.end, name: b.name, project: b.project }));
+    return { ...d, items: [...fixedDay, ...taskDay] };
+  }), [weekStrip, fixedEvents, blocks]);
+
+  const PX_PER_MIN = 0.6;
+  const gridHeight = (WORK_END_MIN - WORK_START_MIN) * PX_PER_MIN;
+  const hourMarks = [];
+  for (let h = 0; h <= 22; h += 2) hourMarks.push(h);
+  function topFor(min) { return (min - WORK_START_MIN) * PX_PER_MIN; }
+  function heightFor(start, end) { return (end - start) * PX_PER_MIN; }
+
+  const projectNames = useMemo(() => Object.keys(projectColors), [projectColors]);
+  const tasksByProject = useMemo(() => {
+    const map = {};
+    tasks.filter(t => !t.done).forEach(t => { (map[t.project] = map[t.project] || []).push(t); });
+    return map;
+  }, [tasks]);
+  function toggleProjectExpand(name) { setExpandedProjects(prev => ({ ...prev, [name]: !prev[name] })); }
+  function projectColor(name) { return projectColors[name] || PALETTE[0]; }
+  function nextPaletteColor(existing) { return PALETTE[Object.keys(existing).length % PALETTE.length]; }
+  function ensureProjectColor(name) { setProjectColors(prev => (prev[name] ? prev : { ...prev, [name]: nextPaletteColor(prev) })); }
+  function cycleProjectColor(name) {
+    setProjectColors(prev => {
+      const idx = PALETTE.indexOf(prev[name]);
+      return { ...prev, [name]: PALETTE[(idx + 1) % PALETTE.length] };
+    });
+  }
+  function addProject() {
+    const name = newProjectName.trim();
+    if (!name || projectColors[name]) { setNewProjectName(''); return; }
+    setProjectColors(prev => ({ ...prev, [name]: nextPaletteColor(prev) }));
+    setNewProjectName('');
+  }
+
+  function addTask() {
+    if (!form.name.trim() || !form.project.trim()) return;
+    ensureProjectColor(form.project.trim());
+    setTasks(prev => [...prev, {
+      id: Date.now(), name: form.name.trim(), project: form.project.trim(),
+      duration: Number(form.duration), deadline: form.deadline, priority: form.priority, notes: form.notes.trim(), done: false,
+    }]);
+    setForm(f => ({ ...f, name: '', notes: '' }));
+  }
+  function markDone(id) { setTasks(prev => prev.map(t => t.id === id ? { ...t, done: true } : t)); }
+  function deleteTask(id) {
+    setTasks(prev => prev.filter(t => t.id !== id));
+    deleteAttachmentsForTask(id).catch(() => {});
+  }
+  function deleteFixed(id) { setFixedEvents(prev => prev.filter(e => e.id !== id)); }
+  function toggleFixedWeekday(i) {
+    setFixedForm(f => ({ ...f, weekdays: f.weekdays.includes(i) ? f.weekdays.filter(x => x !== i) : [...f.weekdays, i] }));
+  }
+  function addFixed() {
+    const name = fixedForm.name.trim();
+    if (!name || fixedForm.weekdays.length === 0) return;
+    const [sh, sm] = fixedForm.start.split(':').map(Number);
+    const [eh, em] = fixedForm.end.split(':').map(Number);
+    const start = sh * 60 + sm, end = eh * 60 + em;
+    if (start === end) return;
+    const base = Date.now();
+    let idx = 0;
+    const rows = [];
+    fixedForm.weekdays.forEach(w => {
+      if (end > start) {
+        rows.push({ id: base + idx++, name, weekday: w, start, end });
+      } else {
+        // Overnight span (e.g. 23:00–07:00): split across the midnight boundary.
+        rows.push({ id: base + idx++, name, weekday: w, start, end: 1440 });
+        rows.push({ id: base + idx++, name, weekday: (w + 1) % 7, start: 0, end });
+      }
+    });
+    setFixedEvents(prev => [...prev, ...rows]);
+    setFixedForm(f => ({ ...f, name: '' }));
+  }
+  function resetAll() {
+    if (!window.confirm('Clear all tasks, fixed commitments, projects, and attachments? This cannot be undone.')) return;
+    setFixedEvents([]); setTasks([]); setProjectColors({});
+    clearAllAttachments().catch(() => {});
+  }
+  function startEdit(t) { setEditingId(t.id); setEditForm({ name: t.name, project: t.project, duration: t.duration, deadline: t.deadline, priority: t.priority, notes: t.notes || '' }); }
+  function cancelEdit() { setEditingId(null); setEditForm(null); }
+  function saveEdit() {
+    if (!editForm.name.trim() || !editForm.project.trim()) return;
+    ensureProjectColor(editForm.project.trim());
+    setTasks(prev => prev.map(t => t.id === editingId
+      ? { ...t, name: editForm.name.trim(), project: editForm.project.trim(), duration: Number(editForm.duration), deadline: editForm.deadline, priority: editForm.priority, notes: editForm.notes.trim() }
+      : t));
+    setEditingId(null); setEditForm(null);
+  }
+
+  async function refreshAttachments() {
+    if (editingId == null) return;
+    setEditAttachments(await getAttachmentsForTask(editingId));
+  }
+  async function handleFilePick(e) {
+    const files = Array.from(e.target.files || []);
+    const rejected = [];
+    for (const file of files) {
+      const ext = file.name.split('.').pop().toLowerCase();
+      if (!ALLOWED_ATTACHMENT_EXT.includes(ext)) { rejected.push(file.name); continue; }
+      await addAttachment(editingId, file);
+    }
+    setAttachError(rejected.length ? `Skipped (unsupported type): ${rejected.join(', ')}` : '');
+    await refreshAttachments();
+    e.target.value = '';
+  }
+  async function removeAttachment(id) {
+    await deleteAttachment(id);
+    await refreshAttachments();
+  }
+
+  return (
+    <div style={{ background: theme.bg, color: theme.ink, minHeight: '100vh', fontFamily: 'ui-sans-serif, system-ui, sans-serif' }} className="p-5 sm:p-8">
+      <div className="flex items-baseline justify-between mb-5 flex-wrap gap-2">
+        <h1 style={{ fontFamily: 'ui-serif, Georgia, serif', fontSize: '26px', fontWeight: 500 }}>Open hours</h1>
+        <div className="flex items-center gap-2">
+          <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${theme.line}` }}>
+            {['day', 'week', 'pomodoro'].map(m => (
+              <button key={m} onClick={() => setViewMode(m)} className="px-3 py-1.5 text-sm capitalize"
+                style={{ background: viewMode === m ? theme.ink : 'transparent', color: viewMode === m ? theme.bg : theme.muted }}>
+                {m}
+              </button>
+            ))}
+          </div>
+          <button onClick={() => setDarkMode(d => !d)} aria-label="Toggle dark mode" className="flex items-center px-2.5 py-1.5 rounded" style={{ border: `1px solid ${theme.line}`, color: theme.muted }}>
+            {darkMode ? <Sun size={14} /> : <Moon size={14} />}
+          </button>
+          <button onClick={() => setRefreshTick(t => t + 1)} className="flex items-center gap-1.5 text-sm px-3 py-1.5 rounded"
+            style={{ border: `1px solid ${theme.line}`, color: theme.muted }}>
+            <RefreshCw size={14} /> Refresh
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-7 gap-1.5 mb-6">
+        {weekStrip.map((d, i) => (
+          <button key={d.date} onClick={() => setSelectedOffset(i)} className="text-center py-2 rounded"
+            style={{ border: `1px solid ${i === selectedOffset ? theme.ink : theme.line}`, background: i === selectedOffset ? theme.card : 'transparent' }}>
+            <div style={{ fontSize: '11px', color: theme.muted }}>{d.label} {d.num}</div>
+            <div style={{ fontSize: '15px', fontWeight: 500 }}>{d.openHours}h</div>
+            <div style={{ fontSize: '10px', color: theme.muted }}>open</div>
+          </button>
+        ))}
+      </div>
+
+      {viewMode === 'week' && (
+        <div className="overflow-x-auto mb-6">
+          <div className="flex" style={{ minWidth: '780px' }}>
+            <div style={{ width: '52px', flexShrink: 0 }}>
+              <div style={{ height: '28px' }} />
+              <div style={{ position: 'relative', height: gridHeight }}>
+                {hourMarks.map(h => (
+                  <div key={h} style={{ position: 'absolute', top: topFor(h * 60) - 6, fontSize: '11px', color: theme.muted }}>
+                    {minutesLabel(h * 60)}
+                  </div>
+                ))}
+              </div>
+            </div>
+            {weekGridDays.map(d => (
+              <div key={d.date} style={{ flex: 1, minWidth: '96px' }}>
+                <div style={{ height: '28px', textAlign: 'center', fontSize: '12px', fontWeight: d.date === todayISOStr ? 500 : 400, color: d.date === todayISOStr ? theme.ink : theme.muted }}>
+                  {d.label} {d.num}
+                </div>
+                <div style={{ position: 'relative', height: gridHeight, borderLeft: `1px solid ${theme.line}` }}>
+                  {hourMarks.map(h => (
+                    <div key={h} style={{ position: 'absolute', top: topFor(h * 60), left: 0, right: 0, borderTop: `1px solid ${theme.line}`, opacity: 0.6 }} />
+                  ))}
+                  {d.items.map((item, i) => {
+                    const color = item.kind === 'fixed' ? theme.muted : projectColor(item.project);
+                    return (
+                      <div key={i} style={{
+                        position: 'absolute', top: topFor(item.start) + 1, height: Math.max(heightFor(item.start, item.end) - 2, 14),
+                        left: '2px', right: '2px', borderRadius: '4px', padding: '2px 4px', overflow: 'hidden',
+                        background: item.kind === 'fixed' ? theme.card : color, border: `1px solid ${item.kind === 'fixed' ? theme.line : color}`,
+                      }}>
+                        <div style={{ fontSize: '10px', fontWeight: 500, lineHeight: 1.25, color: item.kind === 'fixed' ? theme.muted : '#fff' }}>{item.name}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {viewMode === 'pomodoro' && (
+        <div className="mb-6 flex flex-col items-center py-12 rounded" style={{ border: `1px solid ${theme.line}` }}>
+          <div style={{ fontSize: '13px', color: theme.muted, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            {pomoMode === 'focus' ? 'Focus' : pomoMode === 'short' ? 'Short break' : 'Long break'}
+          </div>
+          <div style={{ fontSize: '96px', fontWeight: 500, fontFamily: 'ui-monospace, SFMono-Regular, monospace', color: theme.ink, lineHeight: 1, margin: '14px 0' }}>
+            {formatTimer(pomoLeft)}
+          </div>
+          <div className="flex items-center gap-1.5 mb-7">
+            {[0, 1, 2, 3].map(i => (
+              <div key={i} style={{ width: '7px', height: '7px', borderRadius: '50%', background: (pomoCycles % 4) > i ? theme.ink : theme.line }} />
+            ))}
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={togglePomo} className="flex items-center justify-center rounded-full" style={{ width: '56px', height: '56px', background: theme.ink, color: theme.bg }} aria-label={pomoRunning ? 'Pause' : 'Start'}>
+              {pomoRunning ? <Pause size={22} /> : <Play size={22} />}
+            </button>
+            <button onClick={resetPomo} className="flex items-center justify-center rounded-full" style={{ width: '44px', height: '44px', border: `1px solid ${theme.line}`, color: theme.muted }} aria-label="Reset">
+              <RotateCcw size={17} />
+            </button>
+            <button onClick={skipPomo} className="text-sm px-3 py-2 rounded" style={{ color: theme.muted }}>skip</button>
+          </div>
+        </div>
+      )}
+
+      <div className={viewMode === 'day' ? 'grid sm:grid-cols-5 gap-6' : ''}>
+        {viewMode === 'day' && (
+        <div className="sm:col-span-3">
+          <div className="flex items-center gap-2 mb-3">
+            <button onClick={() => setSelectedOffset(o => Math.max(0, o - 1))} disabled={selectedOffset === 0}
+              aria-label="Previous day" style={{ color: selectedOffset === 0 ? theme.line : theme.muted }}>
+              <ChevronLeft size={16} />
+            </button>
+            <h2 style={{ fontSize: '15px', fontWeight: 500 }}>
+              {isToday ? 'Today' : `${DAY_SHORT[selectedDate.getDay()]} ${selectedDate.getDate()}`}
+            </h2>
+            <button onClick={() => setSelectedOffset(o => Math.min(6, o + 1))} disabled={selectedOffset === 6}
+              aria-label="Next day" style={{ color: selectedOffset === 6 ? theme.line : theme.muted }}>
+              <ChevronRight size={16} />
+            </button>
+          </div>
+          {dayItems.length === 0 && <p style={{ color: theme.muted, fontSize: '14px' }}>Nothing scheduled — add something on the right.</p>}
+          <div>
+            {dayItems.map((item, i) => {
+              const total = item.kind === 'task' ? tasks.find(t => t.id === item.taskId)?.duration : null;
+              const blockLen = item.end - item.start;
+              const isPartial = item.kind === 'task' && total && blockLen < total;
+              return (
+                <div key={i} className="flex items-center gap-3 py-2.5" style={{ borderBottom: `1px solid ${theme.line}` }}>
+                  <div style={{ fontSize: '13px', color: theme.muted, width: '92px', flexShrink: 0 }}>
+                    {minutesLabel(item.start)}–{minutesLabel(item.end)}
+                  </div>
+                  {item.kind === 'fixed' ? (
+                    <div style={{ fontSize: '14px', color: theme.muted }}>{item.name}</div>
+                  ) : (
+                    <>
+                      <div style={{ width: '4px', height: '18px', background: projectColor(item.project), flexShrink: 0 }} />
+                      <div style={{ fontSize: '14px', flex: 1 }}>
+                        {item.name}
+                        <span style={{ color: theme.muted, fontSize: '12px' }}> — {item.project}{isPartial ? ` · ${blockLen} of ${total}m, rest continues later` : ''}</span>
+                      </div>
+                      <button onClick={() => markDone(item.taskId)} aria-label={`Mark ${item.name} done`} style={{ color: theme.muted }}>
+                        <Check size={16} />
+                      </button>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {unscheduled.length > 0 && (
+            <div className="mt-5 p-3 rounded" style={{ border: `1px solid ${theme.warnBorder}`, background: theme.warnBg }}>
+              <div style={{ fontSize: '13px', fontWeight: 500, color: theme.warnText }}>Over capacity</div>
+              <p style={{ fontSize: '12px', color: theme.warnText, marginTop: '2px' }}>
+                These don't fit in the next 14 days at your current pace: {unscheduled.map(u => u.name).join(', ')}.
+              </p>
+            </div>
+          )}
+        </div>
+        )}
+
+        <div className={viewMode === 'day' ? 'sm:col-span-2' : ''}>
+          <h2 style={{ fontSize: '15px', fontWeight: 500 }} className="mb-3">Add a task</h2>
+          <div className="space-y-2">
+            <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+              placeholder="What is it?" className="w-full px-3 py-2 rounded text-sm" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }} />
+            <select value={projectNames.includes(form.project) ? form.project : '__new__'}
+              onChange={e => setForm(f => ({ ...f, project: e.target.value === '__new__' ? '' : e.target.value }))}
+              className="w-full px-3 py-2 rounded text-sm" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }}>
+              {projectNames.map(p => <option key={p} value={p}>{p}</option>)}
+              <option value="__new__">+ New project</option>
+            </select>
+            {!projectNames.includes(form.project) && (
+              <input value={form.project} onChange={e => setForm(f => ({ ...f, project: e.target.value }))}
+                placeholder="New project name" className="w-full px-3 py-2 rounded text-sm" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }} />
+            )}
+            <div className="flex gap-2">
+              <select value={form.duration} onChange={e => setForm(f => ({ ...f, duration: e.target.value }))}
+                className="px-3 py-2 rounded text-sm" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }}>
+                {[15, 30, 45, 60, 90, 120, 180].map(m => <option key={m} value={m}>{m} min</option>)}
+              </select>
+              <input type="date" value={form.deadline} onChange={e => setForm(f => ({ ...f, deadline: e.target.value }))}
+                className="px-3 py-2 rounded text-sm flex-1" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }} />
+            </div>
+            <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+              placeholder="Notes (optional)" rows="2" className="w-full px-3 py-2 rounded text-sm" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink, resize: 'vertical' }} />
+            <div className="flex items-center gap-2">
+              <span style={{ fontSize: '12px', color: theme.muted }}>Priority</span>
+              {[1, 2, 3, 4, 5].map(p => (
+                <button key={p} onClick={() => setForm(f => ({ ...f, priority: p }))} aria-label={`Priority ${p}`}
+                  style={{ width: '16px', height: '16px', borderRadius: '50%', border: `1px solid ${theme.muted}`, background: form.priority >= p ? theme.ink : 'transparent' }} />
+              ))}
+            </div>
+            <button onClick={addTask} className="w-full flex items-center justify-center gap-1.5 py-2 rounded text-sm" style={{ background: theme.ink, color: theme.bg }}>
+              <Plus size={14} /> Add and reschedule
+            </button>
+          </div>
+
+          <h2 style={{ fontSize: '15px', fontWeight: 500 }} className="mb-2 mt-6">Pending tasks</h2>
+          <div>
+            {tasks.filter(t => !t.done).map(t => editingId === t.id ? (
+              <div key={t.id} className="py-2.5 space-y-1.5" style={{ borderBottom: `1px solid ${theme.line}` }}>
+                <input value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
+                  className="w-full px-2 py-1.5 rounded text-sm" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }} />
+                <select value={projectNames.includes(editForm.project) ? editForm.project : '__new__'}
+                  onChange={e => setEditForm(f => ({ ...f, project: e.target.value === '__new__' ? '' : e.target.value }))}
+                  className="w-full px-2 py-1.5 rounded text-sm" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }}>
+                  {projectNames.map(p => <option key={p} value={p}>{p}</option>)}
+                  <option value="__new__">+ New project</option>
+                </select>
+                {!projectNames.includes(editForm.project) && (
+                  <input value={editForm.project} onChange={e => setEditForm(f => ({ ...f, project: e.target.value }))}
+                    placeholder="New project name" className="w-full px-2 py-1.5 rounded text-sm" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }} />
+                )}
+                <div className="flex gap-1.5">
+                  <select value={editForm.duration} onChange={e => setEditForm(f => ({ ...f, duration: e.target.value }))}
+                    className="px-2 py-1.5 rounded text-sm" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }}>
+                    {[15, 30, 45, 60, 90, 120, 180].map(m => <option key={m} value={m}>{m} min</option>)}
+                  </select>
+                  <input type="date" value={editForm.deadline} onChange={e => setEditForm(f => ({ ...f, deadline: e.target.value }))}
+                    className="px-2 py-1.5 rounded text-sm flex-1" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }} />
+                </div>
+                <textarea value={editForm.notes} onChange={e => setEditForm(f => ({ ...f, notes: e.target.value }))}
+                  placeholder="Notes (optional)" rows="2" className="w-full px-2 py-1.5 rounded text-sm" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink, resize: 'vertical' }} />
+                <div className="flex items-center gap-2">
+                  <span style={{ fontSize: '12px', color: theme.muted }}>Priority</span>
+                  {[1, 2, 3, 4, 5].map(p => (
+                    <button key={p} onClick={() => setEditForm(f => ({ ...f, priority: p }))} aria-label={`Priority ${p}`}
+                      style={{ width: '14px', height: '14px', borderRadius: '50%', border: `1px solid ${theme.muted}`, background: editForm.priority >= p ? theme.ink : 'transparent' }} />
+                  ))}
+                </div>
+                <div>
+                  <span style={{ fontSize: '12px', color: theme.muted }}>Attachments</span>
+                  {editAttachments.length > 0 && (
+                    <div className="mt-1 space-y-1">
+                      {editAttachments.map(a => (
+                        <div key={a.id} className="flex items-center gap-2">
+                          <a href={attachmentUrls[a.id]} download={a.name} style={{ fontSize: '12px', color: theme.ink, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.name}</a>
+                          <span style={{ fontSize: '11px', color: theme.muted, flexShrink: 0 }}>{formatFileSize(a.size)}</span>
+                          <button onClick={() => removeAttachment(a.id)} aria-label={`Remove ${a.name}`} style={{ color: theme.muted, flexShrink: 0 }}><X size={12} /></button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <input type="file" multiple accept=".csv,.pdf,.docx,.png,.jpg,.jpeg,.xlsx" onChange={handleFilePick}
+                    className="mt-1.5" style={{ fontSize: '12px', color: theme.muted, width: '100%' }} />
+                  {attachError && <p style={{ fontSize: '11px', color: theme.warnText, marginTop: '2px' }}>{attachError}</p>}
+                </div>
+                <div className="flex gap-2 pt-0.5">
+                  <button onClick={saveEdit} className="flex items-center gap-1 text-sm px-2.5 py-1 rounded" style={{ background: theme.ink, color: theme.bg }}>
+                    <Check size={12} /> Save
+                  </button>
+                  <button onClick={cancelEdit} className="text-sm px-2.5 py-1 rounded" style={{ border: `1px solid ${theme.line}`, color: theme.muted }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div key={t.id} className="flex items-center gap-2 py-2" style={{ borderBottom: `1px solid ${theme.line}` }}>
+                <div style={{ width: '4px', height: '16px', background: projectColor(t.project), flexShrink: 0 }} />
+                <div style={{ fontSize: '13px', flex: 1 }}>
+                  {t.name}
+                  <div style={{ fontSize: '11px', color: theme.muted }}>{t.project} · {t.duration}m · due {t.deadline}</div>
+                  {t.notes && <div style={{ fontSize: '11px', color: theme.muted, fontStyle: 'italic', marginTop: '1px' }}>{t.notes}</div>}
+                </div>
+                <button onClick={() => startEdit(t)} aria-label={`Edit ${t.name}`} style={{ color: theme.muted }}><Pencil size={13} /></button>
+                <button onClick={() => deleteTask(t.id)} aria-label={`Delete ${t.name}`} style={{ color: theme.muted }}><X size={14} /></button>
+              </div>
+            ))}
+            {tasks.filter(t => !t.done).length === 0 && <p style={{ fontSize: '13px', color: theme.muted }}>No pending tasks.</p>}
+          </div>
+
+          <h2 style={{ fontSize: '15px', fontWeight: 500 }} className="mb-2 mt-6">Projects</h2>
+          <div>
+            {projectNames.map(p => {
+              const projTasks = tasksByProject[p] || [];
+              return (
+                <div key={p} style={{ borderBottom: `1px solid ${theme.line}` }}>
+                  <div className="flex items-center gap-2 py-1.5">
+                    <button onClick={() => cycleProjectColor(p)} aria-label={`Change color for ${p}`}
+                      style={{ width: '14px', height: '14px', borderRadius: '50%', background: projectColors[p], flexShrink: 0, border: 'none', cursor: 'pointer' }} />
+                    <button onClick={() => toggleProjectExpand(p)} style={{ fontSize: '13px', flex: 1, textAlign: 'left', color: theme.ink, background: 'none', border: 'none', padding: 0, cursor: 'pointer' }}>
+                      {p}
+                    </button>
+                    <span style={{ fontSize: '11px', color: theme.muted }}>{projTasks.length} task{projTasks.length === 1 ? '' : 's'}</span>
+                  </div>
+                  {expandedProjects[p] && (
+                    <div style={{ paddingLeft: '20px', paddingBottom: '8px' }}>
+                      {projTasks.length === 0
+                        ? <p style={{ fontSize: '12px', color: theme.muted }}>No pending tasks.</p>
+                        : projTasks.map(t => (
+                          <div key={t.id} style={{ fontSize: '12px', color: theme.muted, padding: '2px 0' }}>{t.name} — due {t.deadline}</div>
+                        ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {projectNames.length === 0 && <p style={{ fontSize: '13px', color: theme.muted }}>No projects yet.</p>}
+          </div>
+          <div className="flex gap-1.5 mt-2">
+            <input value={newProjectName} onChange={e => setNewProjectName(e.target.value)}
+              placeholder="New project name" className="flex-1 px-2 py-1.5 rounded text-sm" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }} />
+            <button onClick={addProject} aria-label="Add project" className="px-2.5 py-1.5 rounded text-sm" style={{ border: `1px solid ${theme.line}`, color: theme.muted }}>
+              <Plus size={13} />
+            </button>
+          </div>
+          <p style={{ fontSize: '11px', color: theme.muted, marginTop: '4px' }}>Tap a dot to cycle its color, tap the name to see its tasks.</p>
+
+          <details className="mt-6">
+            <summary style={{ fontSize: '13px', color: theme.muted, cursor: 'pointer' }}>Fixed commitments</summary>
+            <div className="mt-2">
+              {fixedEvents.map(e => (
+                <div key={e.id} className="flex items-center gap-2 py-1.5" style={{ borderBottom: `1px solid ${theme.line}` }}>
+                  <div style={{ fontSize: '12px', flex: 1 }}>{e.name} — {DAY_SHORT[e.weekday]} {minutesLabel(e.start)}–{minutesLabel(e.end)}</div>
+                  <button onClick={() => deleteFixed(e.id)} aria-label={`Delete ${e.name}`} style={{ color: theme.muted }}><X size={12} /></button>
+                </div>
+              ))}
+              {fixedEvents.length === 0 && <p style={{ fontSize: '12px', color: theme.muted, marginBottom: '6px' }}>No fixed commitments.</p>}
+            </div>
+            <div className="space-y-1.5 mt-2">
+              <input value={fixedForm.name} onChange={e => setFixedForm(f => ({ ...f, name: e.target.value }))}
+                placeholder="Name (e.g. German class)" className="w-full px-2 py-1.5 rounded text-sm" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }} />
+              <div className="flex items-center gap-1 flex-wrap">
+                {DAY_SHORT.map((d, i) => (
+                  <button key={i} onClick={() => toggleFixedWeekday(i)} className="px-2 py-1 rounded text-xs"
+                    style={{ border: `1px solid ${theme.line}`, background: fixedForm.weekdays.includes(i) ? theme.ink : 'transparent', color: fixedForm.weekdays.includes(i) ? theme.bg : theme.muted }}>
+                    {d}
+                  </button>
+                ))}
+                <button onClick={() => setFixedForm(f => ({ ...f, weekdays: [1, 2, 3, 4, 5] }))} style={{ fontSize: '11px', color: theme.muted, marginLeft: '4px' }}>
+                  Mon–Fri
+                </button>
+              </div>
+              <div className="flex gap-1.5">
+                <input type="time" value={fixedForm.start} onChange={e => setFixedForm(f => ({ ...f, start: e.target.value }))}
+                  className="px-2 py-1.5 rounded text-sm flex-1" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }} />
+                <input type="time" value={fixedForm.end} onChange={e => setFixedForm(f => ({ ...f, end: e.target.value }))}
+                  className="px-2 py-1.5 rounded text-sm flex-1" style={{ border: `1px solid ${theme.line}`, background: theme.card, color: theme.ink }} />
+              </div>
+              <button onClick={addFixed} className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded text-sm" style={{ border: `1px solid ${theme.line}`, color: theme.muted }}>
+                <Plus size={13} /> Add fixed commitment
+              </button>
+            </div>
+          </details>
+          <button onClick={resetAll} className="mt-4 text-sm" style={{ color: theme.muted }}>Reset all data</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<OpenHours />);
+</script>
+</body>
+</html>
