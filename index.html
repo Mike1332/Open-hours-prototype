@@ -310,7 +310,7 @@ function OpenHours() {
         <h1 style={{ fontFamily: 'ui-serif, Georgia, serif', fontSize: '26px', fontWeight: 500 }}>Open hours</h1>
         <div className="flex items-center gap-2">
           <div className="flex rounded overflow-hidden" style={{ border: `1px solid ${theme.line}` }}>
-            {['day', 'week'].map(m => (
+            {['day', 'week', 'pomodoro'].map(m => (
               <button key={m} onClick={() => setViewMode(m)} className="px-3 py-1.5 text-sm capitalize"
                 style={{ background: viewMode === m ? theme.ink : 'transparent', color: viewMode === m ? theme.bg : theme.muted }}>
                 {m}
@@ -375,6 +375,31 @@ function OpenHours() {
                 </div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {viewMode === 'pomodoro' && (
+        <div className="mb-6 flex flex-col items-center py-12 rounded" style={{ border: `1px solid ${theme.line}` }}>
+          <div style={{ fontSize: '13px', color: theme.muted, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+            {pomoMode === 'focus' ? 'Focus' : pomoMode === 'short' ? 'Short break' : 'Long break'}
+          </div>
+          <div style={{ fontSize: '96px', fontWeight: 500, fontFamily: 'ui-monospace, SFMono-Regular, monospace', color: theme.ink, lineHeight: 1, margin: '14px 0' }}>
+            {formatTimer(pomoLeft)}
+          </div>
+          <div className="flex items-center gap-1.5 mb-7">
+            {[0, 1, 2, 3].map(i => (
+              <div key={i} style={{ width: '7px', height: '7px', borderRadius: '50%', background: (pomoCycles % 4) > i ? theme.ink : theme.line }} />
+            ))}
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={togglePomo} className="flex items-center justify-center rounded-full" style={{ width: '56px', height: '56px', background: theme.ink, color: theme.bg }} aria-label={pomoRunning ? 'Pause' : 'Start'}>
+              {pomoRunning ? <Pause size={22} /> : <Play size={22} />}
+            </button>
+            <button onClick={resetPomo} className="flex items-center justify-center rounded-full" style={{ width: '44px', height: '44px', border: `1px solid ${theme.line}`, color: theme.muted }} aria-label="Reset">
+              <RotateCcw size={17} />
+            </button>
+            <button onClick={skipPomo} className="text-sm px-3 py-2 rounded" style={{ color: theme.muted }}>skip</button>
           </div>
         </div>
       )}
@@ -541,24 +566,6 @@ function OpenHours() {
               ))}
             </div>
           </details>
-        </div>
-      </div>
-
-      <div style={{ position: 'fixed', bottom: '20px', right: '20px', background: theme.card, border: `1px solid ${theme.line}`, borderRadius: '14px', padding: '14px 18px', boxShadow: darkMode ? '0 6px 24px rgba(0,0,0,0.5)' : '0 6px 24px rgba(0,0,0,0.12)', zIndex: 50, minWidth: '170px' }}>
-        <div style={{ fontSize: '11px', color: theme.muted, marginBottom: '2px' }}>
-          {pomoMode === 'focus' ? 'Focus' : pomoMode === 'short' ? 'Short break' : 'Long break'}
-        </div>
-        <div style={{ fontSize: '34px', fontWeight: 500, fontFamily: 'ui-monospace, SFMono-Regular, monospace', color: theme.ink }}>
-          {formatTimer(pomoLeft)}
-        </div>
-        <div className="flex items-center gap-2 mt-2">
-          <button onClick={togglePomo} className="flex items-center justify-center rounded" style={{ width: '34px', height: '34px', background: theme.ink, color: theme.bg }} aria-label={pomoRunning ? 'Pause' : 'Start'}>
-            {pomoRunning ? <Pause size={15} /> : <Play size={15} />}
-          </button>
-          <button onClick={resetPomo} className="flex items-center justify-center rounded" style={{ width: '34px', height: '34px', border: `1px solid ${theme.line}`, color: theme.muted }} aria-label="Reset">
-            <RotateCcw size={14} />
-          </button>
-          <button onClick={skipPomo} style={{ fontSize: '12px', color: theme.muted, marginLeft: 'auto' }}>skip</button>
         </div>
       </div>
     </div>
